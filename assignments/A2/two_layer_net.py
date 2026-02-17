@@ -116,7 +116,9 @@ def nn_forward_pass(params, X):
     # shape (N, C).                                                            #
     ############################################################################
     # Replace "pass" statement with your code
-    pass
+    hidden = torch.mm(X, W1) + b1
+    hidden[hidden < 0] = 0 # ReLU: max(0, x)
+    scores = torch.mm(hidden, W2) + b2
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -176,7 +178,12 @@ def nn_forward_backward(params, X, y=None, reg=0.0):
     # (Check Numeric Stability in http://cs231n.github.io/linear-classify/).   #
     ############################################################################
     # Replace "pass" statement with your code
-    pass
+    scores -= torch.max(scores) # shift the values of f so that the highest number is 0, to prevent numerical instability
+    sum_exp_scores = torch.sum(torch.exp(scores), dim=1,keepdim=True)
+    probs = torch.exp(scores) / sum_exp_scores
+    loss = -torch.sum(torch.log(probs[range(N), y])) # cross-entropy loss = -sum_i y_i log(p_i). Here only the correct class contributes to the loss, so we can just sum over the correct classes.
+    loss /= N
+    loss += reg * (torch.sum(W1 * W1) + torch.sum(W2 * W2)) # L2 regularization
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -190,7 +197,37 @@ def nn_forward_backward(params, X, y=None, reg=0.0):
     # tensor of same size                                                     #
     ###########################################################################
     # Replace "pass" statement with your code
-    pass
+    dW2 = torch.zeros_like(W2)
+    db2 = torch.zeros_like(b2)
+    dW1 = torch.zeros_like(W1)
+    db1 = torch.zeros_like(b1)
+
+    # L_i = - y_i log(p_i) = - log(p_i[y[i]])
+    # # --> L_i = - s_i[y[i]] + log(sum_j exp(s_i[j])))
+    # --> for j != y[i], dL_i / ds_i[j] = exp(s_i[j]) / sum_k exp(s_i[k]) = p_i[j]
+    # --> for j == y[i], dL_i / ds_i[j] = exp(s_i[j]) / sum_k exp(s_i[k]) - 1 / sum_k exp(s_i[k]) = p_i[j] - 1
+    # --> dL / ds = probs - 1(if j == y[i])
+    dscores = probs
+    dscores[torch.arange(N), y] -= 1
+    dscores /= N
+    # scores = h1 @ W2 + b2 
+    # -> dscores / dW2 = h1.T
+    # -> dscores / db2 = 1 (shape of (N,))
+    # -> dscores / dh1 = W2.T
+    dW2 = torch.mm(h1.t(), dscores) + 2 * reg * W2
+    db2 = torch.sum(dscores, dim=0)
+    dh1 = torch.mm(dscores, W2.t())
+    # h1 = ReLU(X @ W1 + b1)
+    dh1[h1 <= 0] = 0 # ReLU gradient
+    # dh1 / dW1 = X.T
+    # dh1 / db1 = 1 (shape of (N,))
+    dW1 = torch.mm(X.t(), dh1) + 2 * reg * W1
+    db1 = torch.sum(dh1, dim=0)
+
+    grads['W1'] = dW1
+    grads['b1'] = db1
+    grads['W2'] = dW2
+    grads['b2'] = db2
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -260,7 +297,11 @@ def nn_train(params, loss_func, pred_func, X, y, X_val, y_val,
     # stored in the grads dictionary defined above.                         #
     #########################################################################
     # Replace "pass" statement with your code
-    pass
+    dW1, db1, dW2, db2 = grads['W1'], grads['b1'], grads['W2'], grads['b2']
+    params['W1'] -= learning_rate * dW1
+    params['b1'] -= learning_rate * db1
+    params['W2'] -= learning_rate * dW2
+    params['b2'] -= learning_rate * db2
     #########################################################################
     #                             END OF YOUR CODE                          #
     #########################################################################
@@ -316,7 +357,8 @@ def nn_predict(params, loss_func, X):
   # TODO: Implement this function; it should be VERY simple!                #
   ###########################################################################
   # Replace "pass" statement with your code
-  pass
+  scores, _ = nn_forward_pass(params, X)
+  y_pred = torch.argmax(scores, dim=1)
   ###########################################################################
   #                              END OF YOUR CODE                           #
   ###########################################################################
@@ -351,7 +393,10 @@ def nn_get_search_params():
   # classifier.                                                             #
   ###########################################################################
   # Replace "pass" statement with your code
-  pass
+  learning_rates = [1e-1, 2e-1, 5e-1, 1e0]
+  hidden_sizes = [64, 128, 256, 512]
+  regularization_strengths = [1e-4, 5e-4, 1e-3, 5e-3]
+  learning_rate_decays = [0.99, 0.95, 0.9, 0.85]
   ###########################################################################
   #                           END OF YOUR CODE                              #
   ###########################################################################
@@ -405,7 +450,24 @@ def find_best_net(data_dict, get_param_set_fn):
   # automatically like we did on the previous exercises.                      #
   #############################################################################
   # Replace "pass" statement with your code
-  pass
+  X_train, y_train, X_val, y_val = data_dict['X_train'], data_dict['y_train'], data_dict['X_val'], data_dict['y_val']
+  learning_rates, hidden_sizes, regularization_strengths, learning_rate_decays = get_param_set_fn()
+  for lr in learning_rates:
+    for hs in hidden_sizes:
+        for rs in regularization_strengths:
+            for lrd in learning_rate_decays:
+                print('train with learning rate: {}, hidden size: {}, regularization strength: {}, learning rate decay: {}'.format(lr, hs, rs, lrd))
+                net = TwoLayerNet(3 * 32 * 32, hs, 10, device=X_train.device, dtype=X_train.dtype)
+                stats = net.train(X_train, y_train, X_val, y_val, num_iters=3000, batch_size=1000, learning_rate=lr, learning_rate_decay=lrd, reg=rs, verbose=False)
+                
+                loss_history = stats['loss_history']
+                train_acc_history = stats['train_acc_history']
+                val_acc_history = stats['val_acc_history']
+                print('loss: {}, train_acc: {}, val_acc: {}'.format(loss_history[-1], train_acc_history[-1], val_acc_history[-1]))
+                if best_val_acc < val_acc_history[-1]:
+                    best_val_acc = val_acc_history[-1]
+                    best_net = net
+                    best_stat = stats
   #############################################################################
   #                               END OF YOUR CODE                            #
   #############################################################################
